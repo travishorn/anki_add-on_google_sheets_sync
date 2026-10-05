@@ -37,11 +37,19 @@ dependencies = [
     { name = "mypy" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "requests" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "aqt", specifier = ">=26.9.3" },
     { name = "mypy", specifier = ">=2.4.0" },
 ]
+
+[package.metadata.requires-dev]
+dev = [{ name = "requests", specifier = ">=2.34.2" }]
 
 [[package]]
 name = "anki-mac-helper"

@@ -1,10 +1,20 @@
 [project]
-name = "anki-addon"
+name = "anki_add-on_google_sheets_sync"
 version = "0.1.0"
-description = "Add your description here"
+description = "Sync Anki notes to Google Sheets"
+license = "MIT"
+license-files = ["LICENSE"]
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "aqt>=26.9.3",
     "mypy>=2.4.0",
+]
+
+[dependency-groups]
+dev = [
+    # At runtime `requests` is provided by Anki itself, so it is only needed
+    # locally for type checking and tests. It is deliberately NOT a runtime
+    # dependency of the add-on.
+    "requests>=2.34.2",
 ]
