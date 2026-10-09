@@ -242,12 +242,14 @@ class GoogleClient:
         sheet_title: str,
         first_data_row_number: int,
         guids: dict[int, str],
+        guid_column_index: int = 0,
     ) -> int:
         """Write newly-assigned guids back into the sheet's guid column.
 
         ``guids`` maps a zero-based data-row index (excluding the header) to the
         guid Anki created for it. ``first_data_row_number`` is the 1-based sheet
         row of the first data row (2 when the header is in row 1).
+        ``guid_column_index`` is the zero-based column containing the guid header.
 
         Only the individual guid cells are written, so a concurrent edit to a
         field column in the meantime is not clobbered. Every range is fully
@@ -260,8 +262,9 @@ class GoogleClient:
         base = tab_a1_range(sheet_title)
         requests_: list[dict[str, Any]] = []
 
+        column = _column_letter(guid_column_index + 1)
         for index, guid in sorted(guids.items()):
-            cell = f"{base}!A{first_data_row_number + index}"
+            cell = f"{base}!{column}{first_data_row_number + index}"
             requests_.append({"range": cell, "values": [[guid]]})
 
         payload = self._request(
@@ -320,6 +323,15 @@ def _describe_error(payload: dict[str, Any], status: int) -> str:
     if status_text:
         prefix += f" {status_text}"
     return f"{prefix}: {message}{detail}"
+
+
+def _column_letter(column_number: int) -> str:
+    """Convert a one-based column number to its Google Sheets A1 letters."""
+    letters = ""
+    while column_number:
+        column_number, remainder = divmod(column_number - 1, 26)
+        letters = chr(ord("A") + remainder) + letters
+    return letters
 
 
 def tab_a1_range(sheet_title: str) -> str:

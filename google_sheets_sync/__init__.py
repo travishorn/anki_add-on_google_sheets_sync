@@ -32,6 +32,7 @@ from .dialogs import (
     MainWindow,
     NoteTypePickerDialog,
     SignInDialog,
+    SheetPickerDialog,
     SpreadsheetPickerDialog,
 )
 
@@ -290,47 +291,76 @@ def add_connection(parent=None, on_changed: Callable[[], None] | None = None) ->
         return
     note_type_id, note_type_name = chosen
 
-    def task() -> tuple[list[tuple[str, str]], dict[str, list[tuple[int, str, int]]]]:
-        client = _client(settings)
-        files = client.list_spreadsheets()[:25]
-        if not files:
-            raise sheets.SheetsError("No spreadsheets were found in your Google Drive.")
-        return files, {file_id: client.list_sheets(file_id) for file_id, _ in files}
+    def list_spreadsheets() -> None:
+        def task() -> list[tuple[str, str]]:
+            files = _client(settings).list_spreadsheets()[:25]
+            if not files:
+                raise sheets.SheetsError(
+                    "No spreadsheets were found in your Google Drive."
+                )
+            return files
 
-    def done(future: Future) -> None:
-        try:
-            files, sheets_by_id = future.result()
-        except Exception as exc:
-            showInfo(f"{MENU_TITLE}: {exc}")
-            return
+        def done(future: Future) -> None:
+            try:
+                files = future.result()
+            except Exception as exc:
+                showInfo(f"{MENU_TITLE}: {exc}")
+                return
 
-        dialog = SpreadsheetPickerDialog(parent or mw, files, sheets_by_id)
-        if not dialog.exec():
-            return
-        selection = dialog.selection()
-        if selection is None:
-            return
-        spreadsheet_id, sheet_id, sheet_title, spreadsheet_title = selection
+            dialog = SpreadsheetPickerDialog(parent or mw, files)
+            if not dialog.exec():
+                return
+            selection = dialog.selection()
+            if selection is None:
+                return
+            spreadsheet_id, spreadsheet_title = selection
+            list_tabs(spreadsheet_id, spreadsheet_title)
 
-        settings.connections.append(
-            Connection(
-                note_type_id=note_type_id,
-                note_type_name=note_type_name,
-                spreadsheet_id=spreadsheet_id,
-                sheet_id=sheet_id,
-                sheet_title=sheet_title,
-                spreadsheet_title=spreadsheet_title,
+        _run(task, done, uses_collection=False, label="Reading your Drive…")
+
+    def list_tabs(spreadsheet_id: str, spreadsheet_title: str) -> None:
+        def task() -> list[tuple[int, str, int]]:
+            return _client(settings).list_sheets(spreadsheet_id)
+
+        def done(future: Future) -> None:
+            try:
+                tabs = future.result()
+            except Exception as exc:
+                showInfo(f"{MENU_TITLE}: {exc}")
+                return
+            if not tabs:
+                showInfo(f"No tabs were found in “{spreadsheet_title}”.")
+                return
+
+            dialog = SheetPickerDialog(parent or mw, spreadsheet_title, tabs)
+            if not dialog.exec():
+                return
+            selection = dialog.selection()
+            if selection is None:
+                return
+            sheet_id, sheet_title = selection
+
+            settings.connections.append(
+                Connection(
+                    note_type_id=note_type_id,
+                    note_type_name=note_type_name,
+                    spreadsheet_id=spreadsheet_id,
+                    sheet_id=sheet_id,
+                    sheet_title=sheet_title,
+                    spreadsheet_title=spreadsheet_title,
+                )
             )
-        )
-        save_settings(settings)
-        if on_changed is not None:
-            on_changed()
-        showInfo(
-            f"“{note_type_name}” is now connected to “{sheet_title}”. "
-            "Use Push to send it to the sheet."
-        )
+            save_settings(settings)
+            if on_changed is not None:
+                on_changed()
+            showInfo(
+                f"“{note_type_name}” is now connected to “{sheet_title}”. "
+                "Use Push to send it to the sheet."
+            )
 
-    _run(task, done, uses_collection=False, label="Reading your Drive…")
+        _run(task, done, uses_collection=False, label="Reading spreadsheet tabs…")
+
+    list_spreadsheets()
 
 
 def remove_connection(
@@ -535,6 +565,7 @@ def pull_from_sheet(parent=None, connection_id: int | None = None) -> None:
                 connection.sheet_title,
                 2,
                 result.created_guids,
+                result.guid_column_index,
             )
 
         def report(future: Future) -> None:
@@ -742,6 +773,7 @@ def pull_all_from_sheets(parent=None) -> None:
                     connection.sheet_title,
                     2,
                     pull_result.created_guids,
+                    pull_result.guid_column_index,
                 )
             except Exception as exc:
                 result.failures.append(

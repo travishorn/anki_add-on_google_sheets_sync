@@ -7,14 +7,15 @@ collection executor (``uses_collection=True``). The network side lives in
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 
 from anki.collection import AddNoteRequest, Collection
 from anki.decks import DeckId
 from anki.notes import Note
 
-#: Columns written before the note type's own fields.
-META_COLUMNS = ["guid", "notetype", "deck"]
+#: Metadata columns written before the note type's own fields.
+META_COLUMNS = ["guid", "notetype", "deck", "added"]
 
 
 class SyncError(RuntimeError):
@@ -85,6 +86,18 @@ def snapshot_notes(col: Collection, note_type_id: int) -> NoteSnapshot:
     field_names = get_field_names(col, note_type_id)
     field_count = len(field_names)
 
+    normalized_headers = [
+        name.strip().casefold() for name in [*META_COLUMNS, *field_names, "tags"]
+    ]
+    if (
+        any(not name for name in normalized_headers)
+        or len(set(normalized_headers)) != len(normalized_headers)
+    ):
+        raise SyncError(
+            "This note type has an empty, duplicate, or reserved field name that "
+            "conflicts with a Google Sheets sync column. Rename the field and try again."
+        )
+
     rows: list[list[str]] = []
     for note_id in col.find_notes(build_note_query(note_type_id)):
         note = col.get_note(note_id)
@@ -93,11 +106,15 @@ def snapshot_notes(col: Collection, note_type_id: int) -> NoteSnapshot:
         # Guard against a field-count mismatch (e.g. the note type changed shape).
         fields = list(note.fields)[:field_count]
         fields += [""] * (field_count - len(fields))
+        added = datetime.fromtimestamp(note.id / 1000, timezone.utc).isoformat(
+            timespec="seconds"
+        ).replace("+00:00", "Z")
         rows.append(
             [
                 note.guid,
                 note_type_name,
                 ", ".join(deck_names_for_note(col, note)),
+                added,
                 *fields,
                 " ".join(note.tags),
             ]
@@ -132,6 +149,7 @@ class PullResult:
     created: int = 0
     skipped: int = 0
     created_guids: dict[int, str] = field(default_factory=dict)
+    guid_column_index: int = 0
 
 
 def _resolve_deck_id(col: Collection, deck_names: str) -> DeckId:
@@ -168,13 +186,40 @@ def apply_rows_to_notes(
     one batched ``add_notes`` call.
     """
     result = PullResult()
-    header = snapshot.header
+    if not rows:
+        raise SyncError("The sheet is missing its header row.")
 
-    guid_index = header.index("guid")
-    deck_index = header.index("deck")
-    tags_index = header.index("tags")
-    first_field = len(META_COLUMNS)
-    field_count = len(snapshot.field_names)
+    # Match using header names, not fixed positions, so metadata columns can be
+    # inserted or reordered without shifting values into note fields.
+    columns: dict[str, int] = {}
+    for index, name in enumerate(rows[0]):
+        normalized = name.strip().casefold()
+        if not normalized:
+            continue
+        if normalized in columns:
+            raise SyncError(f"The sheet has duplicate column headers: '{name}'.")
+        columns[normalized] = index
+
+    guid_index = columns.get("guid")
+    if guid_index is None:
+        raise SyncError("The sheet is missing the required 'guid' column.")
+    result.guid_column_index = guid_index
+    required_columns = [
+        "deck",
+        "tags",
+        *(name.strip().casefold() for name in snapshot.field_names),
+    ]
+    missing_columns = [name for name in required_columns if name not in columns]
+    if missing_columns:
+        raise SyncError(
+            "The sheet is missing required column(s): "
+            + ", ".join(f"'{name}'" for name in missing_columns)
+            + "."
+        )
+
+    deck_index = columns["deck"]
+    tags_index = columns["tags"]
+    field_indices = [columns[name.strip().casefold()] for name in snapshot.field_names]
 
     by_guid: dict[str, Note] = {}
     for note_id in col.find_notes(build_note_query(snapshot.note_type_id)):
@@ -194,11 +239,11 @@ def apply_rows_to_notes(
             result.skipped += 1
             continue
 
-        values = list(row[first_field : first_field + field_count])
-        if len(values) < field_count:
-            values += [""] * (field_count - len(values))
-
-        tags = _row_cell(row, tags_index)
+        values = [
+            _row_cell(row, index) if index is not None else ""
+            for index in field_indices
+        ]
+        tags = _row_cell(row, tags_index) if tags_index is not None else ""
         guid = _row_cell(row, guid_index).strip()
         note = by_guid.get(guid) if guid else None
 

@@ -128,29 +128,16 @@ def connection_status(connected: bool, account: str) -> str:
 
 
 class SpreadsheetPickerDialog(QDialog):
-    """Choose a spreadsheet, then a tab within it.
+    """Choose a spreadsheet before the add-on fetches its tabs."""
 
-    Both lists are populated in the background; the caller passes in the
-    already-fetched data so that this dialog performs no network calls and
-    cannot freeze the UI.
-    """
-
-    def __init__(
-        self,
-        parent,
-        spreadsheets: Sequence[tuple[str, str]],
-        sheets_by_id: dict[str, list[tuple[int, str, int]]],
-    ) -> None:
+    def __init__(self, parent, spreadsheets: Sequence[tuple[str, str]]) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Choose a Google Sheet")
-        self.setMinimumSize(560, 420)
-
-        self._sheets_by_id = sheets_by_id
-        self._chosen_id: str = ""
+        self.setWindowTitle("Choose a Google spreadsheet")
+        self.setMinimumSize(560, 360)
 
         layout = QVBoxLayout(self)
-
         layout.addWidget(QLabel("Spreadsheet"))
+
         self.spreadsheet_list = QListWidget()
         for file_id, name in spreadsheets:
             item = QListWidgetItem(_elide(name))
@@ -159,75 +146,81 @@ class SpreadsheetPickerDialog(QDialog):
             self.spreadsheet_list.addItem(item)
         layout.addWidget(self.spreadsheet_list)
 
-        layout.addWidget(QLabel("Tab"))
-        self.sheet_list = QListWidget()
-        layout.addWidget(self.sheet_list)
-
-        self.spreadsheet_list.currentRowChanged.connect(self._on_spreadsheet_changed)
-        self.sheet_list.currentRowChanged.connect(self._on_sheet_changed)
-
         box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
-        # Keep a reference so the OK button can be enabled/disabled as the
-        # selection changes.
         self.ok_button = box.button(QDialogButtonBox.StandardButton.Ok)
         box.accepted.connect(self.accept)
         box.rejected.connect(self.reject)
         layout.addWidget(box)
 
+        self.spreadsheet_list.currentRowChanged.connect(self._update_ok_state)
+        self.spreadsheet_list.itemDoubleClicked.connect(lambda _item: self.accept())
         if self.spreadsheet_list.count():
             self.spreadsheet_list.setCurrentRow(0)
-        else:
-            self._update_ok_state()
+        self._update_ok_state()
 
-    def _on_spreadsheet_changed(self, row: int) -> None:
-        self.sheet_list.clear()
-        self._chosen_id = ""
-        item = self.spreadsheet_list.item(row) if row >= 0 else None
+    def _update_ok_state(self, _row: int = -1) -> None:
+        if self.ok_button is not None:
+            self.ok_button.setEnabled(self.selection() is not None)
+
+    def selection(self) -> tuple[str, str] | None:
+        """Return ``(spreadsheet_id, spreadsheet_title)`` for the selected item."""
+        item = self.spreadsheet_list.currentItem()
         if item is None:
-            self._update_ok_state()
-            return
+            return None
+        return str(item.data(USER_ROLE)), item.toolTip()
 
-        self._chosen_id = str(item.data(USER_ROLE))
 
-        for sheet_id, title, rows in self._sheets_by_id.get(self._chosen_id, []):
+class SheetPickerDialog(QDialog):
+    """Choose a tab after its spreadsheet's tab list has been fetched."""
+
+    def __init__(
+        self,
+        parent,
+        spreadsheet_title: str,
+        sheets: Sequence[tuple[int, str, int]],
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Choose a tab")
+        self.setMinimumSize(560, 360)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(f"Tabs in {_elide(spreadsheet_title)}"))
+
+        self.sheet_list = QListWidget()
+        for sheet_id, title, rows in sheets:
             label = _elide(title) if title else "(unnamed)"
-            entry = QListWidgetItem(f"{label}  ({rows} rows)")
-            # Store the id and the real (un-elided) title for use downstream.
-            entry.setData(USER_ROLE, sheet_id)
-            entry.setData(USER_ROLE + 1, title)
-            self.sheet_list.addItem(entry)
+            item = QListWidgetItem(f"{label}  ({rows} rows)")
+            item.setData(USER_ROLE, sheet_id)
+            item.setData(USER_ROLE + 1, title)
+            self.sheet_list.addItem(item)
+        layout.addWidget(self.sheet_list)
 
+        box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        self.ok_button = box.button(QDialogButtonBox.StandardButton.Ok)
+        box.accepted.connect(self.accept)
+        box.rejected.connect(self.reject)
+        layout.addWidget(box)
+
+        self.sheet_list.currentRowChanged.connect(self._update_ok_state)
+        self.sheet_list.itemDoubleClicked.connect(lambda _item: self.accept())
         if self.sheet_list.count():
             self.sheet_list.setCurrentRow(0)
         self._update_ok_state()
 
-    def _on_sheet_changed(self, _row: int) -> None:
-        self._update_ok_state()
-
-    def _update_ok_state(self) -> None:
+    def _update_ok_state(self, _row: int = -1) -> None:
         if self.ok_button is not None:
             self.ok_button.setEnabled(self.selection() is not None)
 
-    def selection(self) -> tuple[str, int, str, str] | None:
-        """Return ``(spreadsheet_id, sheet_id, sheet_title, spreadsheet_title)``."""
-        row = self.spreadsheet_list.currentRow()
-        item = self.spreadsheet_list.item(row) if row >= 0 else None
+    def selection(self) -> tuple[int, str] | None:
+        """Return ``(sheet_id, sheet_title)`` for the selected tab."""
+        item = self.sheet_list.currentItem()
         if item is None:
             return None
-
-        sheet_row = self.sheet_list.currentRow()
-        sheet_item = self.sheet_list.item(sheet_row) if sheet_row >= 0 else None
-        if sheet_item is None:
-            return None
-
-        return (
-            str(item.data(USER_ROLE)),
-            int(sheet_item.data(USER_ROLE)),
-            str(sheet_item.data(USER_ROLE + 1)),
-            item.text(),
-        )
+        return int(item.data(USER_ROLE)), str(item.data(USER_ROLE + 1))
 
 
 class ConnectionDialog(QDialog):
@@ -407,7 +400,7 @@ class NoteTypePickerDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Connect a note type")
-        self.setMinimumSize(420, 320)
+        self.setMinimumWidth(420)
 
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel("Note type"))
